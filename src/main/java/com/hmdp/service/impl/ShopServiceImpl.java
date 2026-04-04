@@ -13,6 +13,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * <p>
  *  服务实现类
@@ -40,12 +42,14 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         String shopJson = stringRedisTemplate.opsForValue().get(key);
         // 1.1 有记录直接返回
         if (StrUtil.isNotBlank(shopJson)) {
+            // 续期
+            stringRedisTemplate.expire(key,RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
             return Result.ok(JSONUtil.toBean(shopJson, Shop.class));
         }
         // 1.2 无记录去查MySQL
         Shop shop = getById(id);
         // 1.3 有记录回写Redis并返回
-        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop));
+        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop),RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
         // 2.2 无记录直接返回
         return Result.ok(shop);
     }
