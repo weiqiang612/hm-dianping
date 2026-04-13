@@ -22,4 +22,10 @@ public interface IShopService extends IService<Shop> {
      * @return {@link Result }
      */
     Result queryById(Long id);
+
+    Result update(Shop shop);
+
+    void saveShop(Shop shop);
+
+    Result queryByIdWithPenetration(Long id);
 }
