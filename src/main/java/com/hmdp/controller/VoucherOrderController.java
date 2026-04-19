@@ -24,7 +24,6 @@ public class VoucherOrderController {
     @Autowired
     private IVoucherOrderService voucherOrderService;
 
-
     /**
      *
      * 优惠券秒杀下单
