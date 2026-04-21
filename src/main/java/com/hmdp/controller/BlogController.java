@@ -3,6 +3,7 @@ package com.hmdp.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ScrollResult;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.User;
@@ -34,19 +35,14 @@ public class BlogController {
 
     @PostMapping
     public Result saveBlog(@RequestBody Blog blog) {
-        // 获取登录用户
-        UserDTO user = UserHolder.getUser();
-        blog.setUserId(user.getId());
-        // 保存探店博文
-        blogService.save(blog);
-        // 返回id
-        return Result.ok(blog.getId());
+        return blogService.saveBlog(blog);
     }
 
 
     /**
      *
      * 点赞功能
+     *
      * @param id
      * @return {@link Result }
      */
@@ -76,12 +72,52 @@ public class BlogController {
     /**
      *
      * 根据id查询博客
+     *
      * @param id
      * @return {@link Result }
      */
     @GetMapping("/{id}")
     public Result getBlogById(@PathVariable Integer id) {
         return blogService.getBlogById(id);
+    }
+
+    @GetMapping("/likes/{id}")
+    public Result queryBlogLikesTop5(@PathVariable("id") Long id) {
+        return blogService.queryBlogLikesTop5(id);
+    }
+
+    /**
+     *
+     * 根据用户ID查询其写的 blog
+     *
+     * @param current
+     * @param id
+     * @return {@link Result }
+     */
+    @GetMapping("/of/user")
+    public Result queryBlogByUserId(
+            @RequestParam(value = "current", defaultValue = "1") Integer current,
+            @RequestParam("id") Long id) {
+        Page<Blog> page = blogService.query()
+                .eq("user_id", id)
+                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+        // 获取当前页数据
+        List<Blog> blogs = page.getRecords();
+        return Result.ok(blogs);
+    }
+
+    /**
+     *
+     * 关注推送页面的分页查询
+     * @param max
+     * @param offset
+     * @return {@link Result }
+     */
+    @GetMapping("/of/follow")
+    public Result queryBlogOfFollow(
+            @RequestParam("lastId") Long max,
+            @RequestParam(value = "offset",defaultValue = "0") Integer offset) {
+        return blogService.queryBlogOfFollow(max,offset);
     }
 
 }
