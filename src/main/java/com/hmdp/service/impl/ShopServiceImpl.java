@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.util.StrUtil;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.RedisData;
@@ -10,14 +11,19 @@ import com.hmdp.service.IShopService;
 import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.JsonUtils;
 import com.hmdp.utils.RedisConstants;
+import com.hmdp.utils.SystemConstants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.GeoResults;
+import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.domain.geo.GeoReference;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -33,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 @Service
 @Slf4j
 public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IShopService {
+
 
     // 声明一个全局静态线程池（避免重复创建线程）
     private static final ExecutorService CACHE_REBUILD_EXECUTOR =
@@ -79,49 +86,100 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return Result.ok(shop);
     }
 
-    /**
-     * 将数据及其逻辑过期时间封装后写入 Redis
-     *
-     * @param key        Redis Key
-     * @param obj        要缓存的对象
-     * @param expireTime 过期时间长度
-     * @param unit       时间单位
-     */
-    public void setWithLogicalExpire(Object obj, String key, Long expireTime, TimeUnit unit) {
-        if (obj == null) {
-            log.warn("Attempting to set null object for logical expire, key: {}", key);
-            return;
-        }
-
-        // 1. 封装逻辑过期包装类
-        RedisData redisData = new RedisData();
-        redisData.setData(obj); // RedisData 的 data 属性本身就是 Object，直接存即可
-
-        // 2. 设置逻辑过期时间
-        // 将当前时间加上指定步长，转换为 LocalDateTime
-        LocalDateTime logicalExpireTime = LocalDateTime.now().plusSeconds(unit.toSeconds(expireTime));
-        redisData.setExpiredTime(logicalExpireTime);
-
-        // 3. 写入 Redis
-        stringRedisTemplate.opsForValue().set(key, JsonUtils.toJsonStr(redisData));
-    }
-
-    /**
-     * 逻辑不过期
-     * 1000线程 ramp-up 1秒 循环次数300， 测试吞吐量 19787 ，平均响应时间 45ms ，异常 0%
-     *
-     * @param id
-     * @return {@link Result }
-     */
     @Override
-    public Result queryById(Long id) {
-
-        Shop shop = cacheClient.getWithLogicalExpire(RedisConstants.CACHE_SHOP_KEY, id, Shop.class, 30L, TimeUnit.MINUTES, RedisConstants.LOCK_SHOP_KEY + id, this::getById);
-        if (shop == null) {
-            return Result.fail("店铺不存在！");
+    public Result quertShopByLocationAndType(Integer typeId, Integer current, Double x, Double y) {
+        // 1. 判断是否需要根据坐标查询
+        if (x == null || y == null) {
+            Page<Shop> page = query()
+                    .eq("type_id", typeId)
+                    .page(new Page<>(current, SystemConstants.DEFAULT_PAGE_SIZE));
+            return Result.ok(page.getRecords());
         }
-        return Result.ok(shop);
+        // 2. 计算分页查询参数
+        int from = (current - 1) * SystemConstants.DEFAULT_PAGE_SIZE;
+        int end = current * SystemConstants.DEFAULT_PAGE_SIZE;
+        // 3. 查询Redis，按照距离排序、分页。 结果：shopId、distance
+        String key = RedisConstants.SHOP_GEO_KEY + typeId;
+        // 0 , end 条，需要手动截取
+        GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults = stringRedisTemplate.opsForGeo().search(
+                key,
+                GeoReference.fromCoordinate(x, y),
+                new Distance(5000), // 5km
+                RedisGeoCommands.GeoSearchCommandArgs.newGeoSearchArgs().includeDistance().limit(end)
+        );
+        if (geoResults == null || geoResults.getContent().isEmpty()) {
+            // 3.1 没有结果，返回空列表
+            return Result.ok(Collections.emptyList());
+        }
+        List<Long> ids = new ArrayList<>(SystemConstants.DEFAULT_PAGE_SIZE);
+        HashMap<String, Distance> map = new HashMap<>(SystemConstants.DEFAULT_PAGE_SIZE);
+
+        // 3.2 如果List的条数小于from，就不需要往下走了
+        if (geoResults.getContent().size() <= from) {
+            // 没有下一页了
+            return Result.ok(Collections.emptyList());
+        }
+
+        geoResults.getContent().stream().skip(from).forEach(result -> {
+            // 4. 解析id
+            String shopIdStr = result.getContent().getName();
+            ids.add(Long.valueOf(shopIdStr));
+            // 获取距离
+            Distance distance = result.getDistance();
+            map.put(shopIdStr, distance);
+        });
+        // 5. 根据id查询Shop
+        List<Shop> list = query().in("id", ids).last("ORDER BY FIELD(id," + StrUtil.join(",", ids) + ")").list();
+        list.forEach(shop -> {
+            shop.setDistance(map.get(shop.getId().toString()).getValue());
+        });
+        // 6. 返回
+        return Result.ok(list);
     }
+
+                /**
+                 * 将数据及其逻辑过期时间封装后写入 Redis
+                 *
+                 * @param key        Redis Key
+                 * @param obj        要缓存的对象
+                 * @param expireTime 过期时间长度
+                 * @param unit       时间单位
+                 */
+        public void setWithLogicalExpire (Object obj, String key, Long expireTime, TimeUnit unit){
+            if (obj == null) {
+                log.warn("Attempting to set null object for logical expire, key: {}", key);
+                return;
+            }
+
+            // 1. 封装逻辑过期包装类
+            RedisData redisData = new RedisData();
+            redisData.setData(obj); // RedisData 的 data 属性本身就是 Object，直接存即可
+
+            // 2. 设置逻辑过期时间
+            // 将当前时间加上指定步长，转换为 LocalDateTime
+            LocalDateTime logicalExpireTime = LocalDateTime.now().plusSeconds(unit.toSeconds(expireTime));
+            redisData.setExpiredTime(logicalExpireTime);
+
+            // 3. 写入 Redis
+            stringRedisTemplate.opsForValue().set(key, JsonUtils.toJsonStr(redisData));
+        }
+
+        /**
+         * 逻辑不过期
+         * 1000线程 ramp-up 1秒 循环次数300， 测试吞吐量 19787 ，平均响应时间 45ms ，异常 0%
+         *
+         * @param id
+         * @return {@link Result }
+         */
+        @Override
+        public Result queryById (Long id){
+
+            Shop shop = cacheClient.getWithLogicalExpire(RedisConstants.CACHE_SHOP_KEY, id, Shop.class, 30L, TimeUnit.MINUTES, RedisConstants.LOCK_SHOP_KEY + id, this::getById);
+            if (shop == null) {
+                return Result.fail("店铺不存在！");
+            }
+            return Result.ok(shop);
+        }
 
 //    /**
 //     * 互斥锁
@@ -182,27 +240,27 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 //    }
 
 
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public Result update(Shop shop) {
-        Long id = shop.getId();
-        if (id == null) {
-            return Result.fail("店铺ID不能为null");
+        @Override
+        @Transactional(rollbackFor = Exception.class)
+        public Result update (Shop shop){
+            Long id = shop.getId();
+            if (id == null) {
+                return Result.fail("店铺ID不能为null");
+            }
+            // 1. 更新数据库
+            updateById(shop);
+            // 2. 删除缓存
+            stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY + id);
+            return Result.ok();
         }
-        // 1. 更新数据库
-        updateById(shop);
-        // 2. 删除缓存
-        stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY + id);
-        return Result.ok();
-    }
 
 
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public void saveShop(Shop shop) {
-        // 1. 写入数据库
-        save(shop);
-        // 2. 同步删除原缓存(数据缓存的更新策略)
-        stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY + shop.getId());
+        @Override
+        @Transactional(rollbackFor = Exception.class)
+        public void saveShop (Shop shop){
+            // 1. 写入数据库
+            save(shop);
+            // 2. 同步删除原缓存(数据缓存的更新策略)
+            stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY + shop.getId());
+        }
     }
-}

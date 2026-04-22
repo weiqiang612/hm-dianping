@@ -28,4 +28,6 @@ public interface IShopService extends IService<Shop> {
     void saveShop(Shop shop);
 
     Result queryByIdWithPenetration(Long id);
+
+    Result quertShopByLocationAndType(Integer typeId, Integer current, Double x, Double y);
 }
