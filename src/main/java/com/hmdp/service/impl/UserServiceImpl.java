@@ -19,13 +19,16 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
 import java.sql.Wrapper;
+import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -140,4 +143,71 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         }
         UserHolder.removeUser();
     }
+
+    @Override
+    public Result sign() {
+        // 1. 获取当前用户
+        UserDTO dto = UserHolder.getUser();
+        // 2. 判断用户是否存在
+        if (dto == null) {
+            return Result.fail("请先登录！");
+        }
+        // 3. 存在进行签到
+        // 键 ： sign:用户id:年月
+        String key = RedisConstants.USER_SIGN_KEY + dto.getId() + ":" + LocalDateTime.now().format(SystemConstants.DATE_FORMATTER_YYYYMM);
+        Boolean success = stringRedisTemplate.opsForValue().setBit(key, LocalDateTime.now().getDayOfMonth() - 1, true);
+        // 4. 返回结果
+        if (Boolean.FALSE.equals(success)) {
+            return Result.fail("签到失败！");
+        }
+        return Result.ok();
+    }
+
+    /**
+     *
+     * 签到统计功能
+     *
+     * @return {@link Result }
+     */
+    @Override
+    public Result signCount() {
+        // 1. 获取当前用户
+        UserDTO dto = UserHolder.getUser();
+        // 2. 判断用户是否登录
+        if (dto == null) {
+            return Result.fail("请先登录！");
+        }
+        // 3. 获取该用户的签到数据
+        String key = RedisConstants.USER_SIGN_KEY + dto.getId() + ":" + LocalDateTime.now().format(SystemConstants.DATE_FORMATTER_YYYYMM);
+        // 3.1 获取本月截止到今天的所有签到记录
+        // 这里返回的是一个十进制数字，表示当前月的签到情况
+        List<Long> bitField = stringRedisTemplate.opsForValue().bitField(
+                key,
+                // 从0开始，获取今天是本月的第几天，就获取多少位签到记录
+                BitFieldSubCommands.create()
+                        .get(BitFieldSubCommands.BitFieldType.unsigned(LocalDateTime.now().getDayOfMonth())).valueAt(0)
+        );
+        // 4. 对数据进行处理得到本月的连续签到天数
+        // 获取所有连续签到天数，比较得到最大连续签到天数
+        if (bitField == null || bitField.isEmpty()) {
+            return Result.ok(0);
+        }
+        Long signSituation = bitField.get(0);
+        if (signSituation == null ||  signSituation == 0) {
+            return Result.ok(0);
+        }
+        // 从今天的位置开始向前统计，直到遇到第一次未签到为止，为一个连续签到天数
+        int nowCount = 0;
+        // 如果为0，说明未签到，结束
+        // 如果为1，说明已签到，连续签到天数加1，继续统计下一位
+        while ((signSituation & 1) != 0) {
+            // 4.1 将该数字与1进行与运算，得到最后一位的签到情况
+            // 4.2 判断是否为0
+            nowCount++;
+            // 4.3 对该数字进行右移操作，继续统计下一位
+            signSituation >>>= 1;
+        }
+        return Result.ok(nowCount);
+    }
+
 }

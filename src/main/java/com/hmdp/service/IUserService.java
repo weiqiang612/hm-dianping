@@ -40,4 +40,13 @@ public interface IUserService extends IService<User> {
      * 登出
      */
     void logout(HttpServletRequest request);
+
+    /**
+     *
+     * 签到
+     * @return {@link Result }
+     */
+    Result sign();
+
+    Result signCount();
 }
