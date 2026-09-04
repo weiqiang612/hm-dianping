@@ -15,6 +15,7 @@ import org.springframework.data.geo.Point;
 import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -41,12 +42,18 @@ class HmDianPingApplicationTests {
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
+
+    @Test
+    void testRedisTemplate(){
+    }
+
+
     /**
      * 将店铺经纬度信息加载到Redis
      *
      */
-    @Test
-    void loadShopInfo(){
+//    @Test
+    void loadShopInfo() {
         // 1. 查询店铺信息
         List<Shop> list = shopService.query().list();
         if (list == null || list.isEmpty()) {
@@ -59,7 +66,32 @@ class HmDianPingApplicationTests {
         }
     }
 
-
+    /**
+     *
+     * 测试HyperLogLog内存占用
+     */
+//    @Test
+    void testHyperLogLog() {
+        // 1. 准备数组，装用户数据
+        final int batchSize = 1000;
+        List<String> users = new ArrayList<>(batchSize);
+        // 2. 添加数据到HyperLogLog
+        for (int i = 1; i <= 1000000; i++) {
+            users.add("user" + i);
+            // 按已装载的数据量分批写入，避免i=0时误触发
+            if (users.size() == batchSize) {
+                stringRedisTemplate.opsForHyperLogLog().add("hll1", users.toArray(new String[0]));
+                users.clear();
+            }
+        }
+        // 循环结束后补写最后一批不足batchSize的数据
+        if (!users.isEmpty()) {
+            stringRedisTemplate.opsForHyperLogLog().add("hll1", users.toArray(new String[0]));
+        }
+        // 3. 统计数量
+        Long size = stringRedisTemplate.opsForHyperLogLog().size("hll1");
+        System.out.println("size = " + size);
+    }
 
 
 //    @Test
@@ -78,7 +110,6 @@ class HmDianPingApplicationTests {
 //            }
 //        }
 //    }
-
 
 
 //    // 预热
@@ -107,8 +138,6 @@ class HmDianPingApplicationTests {
 //        long end = System.currentTimeMillis();
 //        System.out.println("time = " + (end - begin));
 //    }
-
-
 
 
 }
